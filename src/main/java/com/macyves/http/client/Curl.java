@@ -18,81 +18,54 @@ import java.util.List;
 import org.apache.commons.codec.binary.Base64;
 import org.apache.http.Header;
 import org.apache.http.HttpEntity;
-import org.apache.http.HttpException;
 import org.apache.http.HttpHost;
-import org.apache.http.HttpRequest;
-import org.apache.http.HttpRequestInterceptor;
 import org.apache.http.HttpResponse;
-import org.apache.http.HttpResponseInterceptor;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.AuthCache;
+import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.methods.HttpDelete;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPatch;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpPut;
 import org.apache.http.client.methods.HttpRequestBase;
-import org.apache.http.client.protocol.ClientContext;
+import org.apache.http.client.protocol.HttpClientContext;
 import org.apache.http.entity.ByteArrayEntity;
 import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
-import org.apache.http.entity.mime.MultipartEntity;
-import org.apache.http.entity.mime.content.ContentBody;
+import org.apache.http.entity.mime.MultipartEntityBuilder;
 import org.apache.http.entity.mime.content.FileBody;
 import org.apache.http.impl.auth.BasicScheme;
 import org.apache.http.impl.client.BasicAuthCache;
-import org.apache.http.impl.client.DefaultHttpClient;
-import org.apache.http.protocol.BasicHttpContext;
-import org.apache.http.protocol.HttpContext;
+import org.apache.http.impl.client.BasicCredentialsProvider;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 
-@SuppressWarnings(value = { "deprecation" })
 public class Curl {
-    private DefaultHttpClient client;
+    private CloseableHttpClient client;
     private HttpHost configuration;
     private HttpResponse lastResponseHeader;
     private HttpEntity lastResponseBody;
-    private String lastResponseBodyString;
-    private BasicHttpContext localcontext;
-
+    private String lastResponseBodyString = "";
+    private HttpClientContext localcontext;
+    private String lastRequestBodyString = "";
     private String username = "test";
-    private String password = "vac123!";
+    private String password = "test";
     private boolean usebasic = false;
+    private boolean verbose = false;
 
-    public Curl(String hostname, int port, boolean verbose) {
-        client = new DefaultHttpClient();
-        if (verbose) {
-            client.addRequestInterceptor(new HttpRequestInterceptor() {
-
-                @Override
-                public void process(HttpRequest request, HttpContext context) throws HttpException, IOException {
-                    // print out the request
-                    System.out.println(request.getRequestLine().toString());
-                    Header[] headers = request.getAllHeaders();
-                    for (Header header : headers) {
-                        System.out.println(header.getName() + ": " + header.getValue());
-                    }
-                }
-            });
-            client.addResponseInterceptor(new HttpResponseInterceptor() {
-
-                @Override
-                public void process(HttpResponse response, HttpContext context) throws HttpException, IOException {
-                    System.out.println(response.getStatusLine().toString());
-                    Header[] headers = response.getAllHeaders();
-                    for (Header header : headers) {
-                        System.out.println(header.getName() + ": " + header.getValue());
-                    }
-                }
-            });
-        }
+    public Curl(String hostname, int port, final boolean verbose, final boolean basicAuth) {
+        this.usebasic = basicAuth;
+        this.verbose = verbose;
         configuration = new HttpHost(hostname, port);
-        localcontext = new BasicHttpContext();
+        localcontext = HttpClientContext.create();
     }
 
     public void clearCookies() {
-        client.getCookieStore().clear();
+        localcontext.getCookieStore().clear();
     }
 
     public void setUsernamePassword(String uname, String pwd) {
@@ -100,24 +73,33 @@ public class Curl {
         this.password = pwd;
     }
 
-    private void attachBasicAuth(String username, String password) {
-        client.getCredentialsProvider().setCredentials(new AuthScope(configuration.getHostName(), configuration.getPort()), new UsernamePasswordCredentials(username, password));
-        // Create AuthCache instance
-        AuthCache authCache = new BasicAuthCache();
-        // Generate BASIC scheme object and add it to the local
-        // auth cache
-        BasicScheme basicAuth = new BasicScheme();
-        authCache.put(configuration, basicAuth);
-
-        // Add AuthCache to the execution context
-        localcontext.setAttribute(ClientContext.AUTH_CACHE, authCache);
-    }
-
     private int executeRequest(HttpRequestBase method) {
         try {
             HttpResponse response;
+            if (usebasic) {
+                CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
+                credentialsProvider.setCredentials(
+                        new AuthScope(null, -1),
+                        new UsernamePasswordCredentials(username, password));
+                // localcontext.setCredentialsProvider(credentialsProvider);
+                client = HttpClients.custom()
+                        .setDefaultCredentialsProvider(credentialsProvider)
+                        .build();
 
+                // Create AuthCache instance
+                AuthCache authCache = new BasicAuthCache();
+                // Generate BASIC scheme object and add it to the local
+                // auth cache
+                BasicScheme basicAuth = new BasicScheme();
+                authCache.put(configuration, basicAuth);
+
+                // Add AuthCache to the execution context
+                localcontext.setAuthCache(authCache);
+            } else {
+                client = HttpClientBuilder.create().build();
+            }
             response = client.execute(configuration, method, localcontext);
+            // build the client, then execute it
             lastResponseHeader = response;
             // consume the response
             lastResponseBody = response.getEntity();
@@ -128,6 +110,24 @@ public class Curl {
                 lastResponseBodyString = null;
             }
             EntityUtils.consume(lastResponseBody);
+            if (verbose) {
+                // print out request
+                System.out.println("===== REQUEST =====");
+                System.out.println(method.getRequestLine().toString());
+                Header[] r_headers = method.getAllHeaders();
+                for (Header header : r_headers) {
+                    System.out.println(header.getName() + ": " + header.getValue());
+                }
+                System.out.println(lastRequestBodyString);
+                // print out response
+                System.out.println("===== RESPONSE =====");
+                System.out.println(response.getStatusLine().toString());
+                Header[] headers = response.getAllHeaders();
+                for (Header header : headers) {
+                    System.out.println(header.getName() + ": " + header.getValue());
+                }
+                System.out.println(lastResponseBodyString);
+            }
             return returnValue;
         } catch (IOException e) {
             // could be connection refused here: Caused by:
@@ -169,22 +169,7 @@ public class Curl {
     }
 
     public int issueRequestWithHeaders(String type, String url, String data, String... headers) {
-        // determine if its Basic or cookie based.
-        if (usebasic) {
-            clearCookies();
-            attachBasicAuth(username, password);
-            if (headers != null) {
-                List<String> tmp = new ArrayList<String>();
-                for (String s : headers) {
-                    if (!s.contains("Cookie")) {
-                        tmp.add(s);
-                    }
-                }
-                return createAndExecuteMethodWithHeaders(type, url, data, false, false, tmp.toArray(new String[0]));
-            }
-        }
         return createAndExecuteMethodWithHeaders(type, url, data, false, false, headers);
-
     }
 
     public String getCookieValue() {
@@ -221,14 +206,17 @@ public class Curl {
             method = new HttpPost(url);
             if (data != null && !upload) {
                 ((HttpPost) method).setEntity(new StringEntity(data));
+                lastRequestBodyString = data;
             } else if (data != null && upload) {
                 if (multipart) {
                     // read from file location and use multipart entity
                     File file = new File(data);
-                    MultipartEntity entity = new MultipartEntity();
-                    ContentBody body = new FileBody(file);
-                    entity.addPart("file", body);
+                    FileBody body = new FileBody(file);
+                    HttpEntity entity = MultipartEntityBuilder.create()
+                            .addPart("file", body)
+                            .build();
                     ((HttpPost) method).setEntity(entity);
+                    lastRequestBodyString = "binary";
                 } else {
                     // File entity as octetstream
                     byte[] content = null;
@@ -255,8 +243,8 @@ public class Curl {
         return method;
     }
 
-    public void shutdown() {
-        client.getConnectionManager().shutdown();
+    public void shutdown() throws IOException {
+        client.close();
     }
 
     public static byte[] readFileToBytes(File file) throws IOException {
